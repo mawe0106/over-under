@@ -777,12 +777,28 @@ function startGame() {
   vibrate(30);
 }
 
-/* ---------- predict (Over/Under: the chugger calls their own time) ---------- */
+/* ---------- predict (Over/Under: the chugger calls their own time) ----------
+   Room mode: only the chugger's phone can type the prediction. Everyone
+   else sees a waiting screen, with a takeover link for chuggers who were
+   added to the roster without a phone of their own. */
 function buildPredict(app) {
-  const name = nameOf(S, S.round.chuggerId);
-  const isMe = session.mode === 'room' && S.round.chuggerId === me.id;
+  const r = S.round;
+  const name = nameOf(S, r.chuggerId);
+  const isRoom = session.mode === 'room';
+  const isMe = isRoom && r.chuggerId === me.id;
+  const canType = !isRoom || isMe || ui.takeover === r.n;
+  if (!canType) {
+    app.innerHTML = `
+      <div class="roundtag">Round ${r.n} · ${MODE_INFO.ou.icon} ${MODE_INFO.ou.name}</div>
+      <h2 style="text-align:center">🍺 ${esc(name)} chugs!</h2>
+      <div class="lockmsg thinking">🤔 ${esc(name)} is thinking…</div>
+      <p class="hint">${esc(name)} calls their own time on their phone. Get your over/under ready.</p>
+      <button class="linkbtn" id="b-takeover">${esc(name)} doesn’t have a phone? Enter it from here</button>`;
+    $('#b-takeover').onclick = () => { ui.takeover = r.n; builtKey = null; render(); };
+    return;
+  }
   app.innerHTML = `
-    <div class="roundtag">Round ${S.round.n} · ${MODE_INFO.ou.icon} ${MODE_INFO.ou.name}</div>
+    <div class="roundtag">Round ${r.n} · ${MODE_INFO.ou.icon} ${MODE_INFO.ou.name}</div>
     <h2 style="text-align:center">🍺 ${isMe ? 'You chug' : esc(name) + ' chugs'}!</h2>
     <p class="hint">${session.mode === 'solo' ? `Pass the phone to <b>${esc(name)}</b>.` : ''}
       ${isMe ? 'Call your time' : `${esc(name)} calls their own time`} — how many seconds?</p>
@@ -790,8 +806,7 @@ function buildPredict(app) {
       <input type="number" id="predIn" inputmode="decimal" step="0.1" min="0" placeholder="12">
       <span class="unit">sec</span>
     </div>
-    <button class="btn primary big" id="b-lock">Lock it in 🔒</button>
-    ${session.mode === 'room' && !isMe ? `<p class="hint">Any phone can type this — it’s ${esc(name)}’s call though.</p>` : ''}`;
+    <button class="btn primary big" id="b-lock">Lock it in 🔒</button>`;
   const lock = () => {
     const v = parseFloat($('#predIn').value);
     if (!isFinite(v) || v <= 0 || v > 3600) { toast('Enter the prediction in seconds'); return; }
@@ -960,6 +975,10 @@ function buildReady(app) {
   const r = S.round;
   const mode = r.mode || gameMode();
   const chugger = nameOf(S, r.chuggerId);
+  const isRoom = session.mode === 'room';
+  // room mode: the stopwatch belongs to the chugger's phone (with a
+  // takeover link for chuggers who don't have their own device)
+  const canStart = !isRoom || r.chuggerId === me.id || ui.takeover === r.n;
   const guesses = Object.values(r.bets).filter(b => typeof b.guess === 'number').map(b => b.guess);
   app.innerHTML = `
     <div class="roundtag">Round ${r.n} · get ready</div>
@@ -970,11 +989,16 @@ function buildReady(app) {
         : `<b>${esc(chugger)}</b> says <span class="bigpred">${r.prediction}s</span>`}
     </div>
     <div class="clockwrap"><div class="clock" id="clock">00:00.00</div></div>
-    <button class="btn go" id="b-startclock" style="min-height:96px;font-size:28px">▶ START</button>
-    <p class="hint">${session.mode === 'room'
-      ? 'First phone to hit START runs the clock for this round.'
-      : `Hit START the moment ${esc(chugger)} starts drinking.`}</p>`;
-  $('#b-startclock').onclick = startClock;
+    ${canStart ? `
+      <button class="btn go" id="b-startclock" style="min-height:96px;font-size:28px">▶ START</button>
+      <p class="hint">${isRoom
+        ? (r.chuggerId === me.id ? 'Hit START and drink!' : `Hit START the moment ${esc(chugger)} starts drinking.`)
+        : `Hit START the moment ${esc(chugger)} starts drinking.`}</p>` : `
+      <div class="lockmsg thinking">⏱ Waiting for ${esc(chugger)} to hit START…</div>
+      <p class="hint">The clock runs on ${esc(chugger)}’s phone — you’ll see it live here.</p>
+      <button class="linkbtn" id="b-takeover">${esc(chugger)} doesn’t have a phone? Start from here</button>`}`;
+  if (canStart) $('#b-startclock').onclick = startClock;
+  else $('#b-takeover').onclick = () => { ui.takeover = r.n; builtKey = null; render(); };
 }
 
 /* ---------- stopwatch ---------- */

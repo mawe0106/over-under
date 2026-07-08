@@ -52,13 +52,14 @@ after 24h idle); the backend is permanent.
 
 ## How a round works
 
-1. **Predict** — Over/Under: the chugger calls their time (any phone can type
-   it). Chugstradamus: everyone else enters their exact prediction.
+1. **Predict** — Over/Under: the chugger calls their time on *their own phone*
+   while everyone else sees "Jamie is thinking…". Chugstradamus: everyone else
+   enters their exact prediction.
 2. **Bet** — Over/Under only: big OVER/UNDER buttons per player.
 3. **Ready** — the stopwatch screen shows `00:00.00` armed with a manual
-   **START** button. Nothing starts until someone taps it. In room mode the
-   first phone to tap START owns the clock for the round (everyone else sees
-   "Jamie is running the clock").
+   **START** button — but only on the chugger's phone; other phones watch and
+   wait. (If the chugger was added to the roster without a phone, any phone
+   can take over via the link on the waiting screen.)
 4. **Chug & stop** — iOS-stopwatch-style display, `MM:SS.HH`, live to the
    hundredth on every phone.
 5. **Result** — points awarded, scoreboard updates, and the next chugger is
