@@ -112,8 +112,8 @@ let S = null;                          // shared game state (source of truth mir
 let backend = null;
 
 const MODE_INFO = {
-  ou:      { icon: '🎲', name: 'Over/Under',    blurb: 'Chugger calls their time, the rest bet over or under. Get it wrong and you might be up next…' },
-  psychic: { icon: '🔮', name: 'Crystal Ball', blurb: 'Everyone predicts the exact time. Closest scores, furthest off chugs next.' },
+  ou:      { icon: '🎲', name: 'Over/Under',    blurb: 'Bet over or under the chugger’s call — wrong callers risk the wheel.' },
+  psychic: { icon: '🔮', name: 'Crystal Ball', blurb: 'Predict the exact time — closest scores, furthest off chugs next.' },
 };
 const gameMode = () => (S && MODE_INFO[S.gameMode]) ? S.gameMode : 'ou';
 
@@ -670,11 +670,9 @@ function buildLobby(app) {
       <div class="codecard">
         <div class="sub">ROOM CODE</div>
         <div class="bigcode">${esc(S.code)}</div>
-        <div class="sub">Friends: open the app → “Join with code”</div>
         <button class="btn small yellow" id="b-share" style="margin:10px auto 0">📤 Share invite</button>
       </div>` : `
-      <h2>📵 Solo phone</h2>
-      <p class="hint" style="text-align:left">One phone, passed around. Add everyone playing:</p>`}
+      <h2>📵 Solo phone</h2>`}
     <h3>Game mode</h3>
     <div class="modepick" id="modePick">
       ${Object.entries(MODE_INFO).map(([m, info]) => `
@@ -859,7 +857,6 @@ function buildPredict(app) {
       <div class="roundtag">Round ${r.n} · ${MODE_INFO.ou.icon} ${MODE_INFO.ou.name}</div>
       <h2 style="text-align:center">🍺 ${esc(name)} chugs!</h2>
       <div class="lockmsg thinking">🤔 ${esc(name)} is thinking…</div>
-      <p class="hint">${esc(name)} calls their own time on their phone. Get your over/under ready.</p>
       <button class="linkbtn" id="b-takeover">${esc(name)} doesn’t have a phone? Enter it from here</button>`;
     $('#b-takeover').onclick = () => { ui.takeover = r.n; builtKey = null; render(); };
     return;
@@ -867,8 +864,7 @@ function buildPredict(app) {
   app.innerHTML = `
     <div class="roundtag">Round ${r.n} · ${MODE_INFO.ou.icon} ${MODE_INFO.ou.name}</div>
     <h2 style="text-align:center">🍺 ${isMe ? 'You chug' : esc(name) + ' chugs'}!</h2>
-    <p class="hint">${session.mode === 'solo' ? `Pass the phone to <b>${esc(name)}</b>.` : ''}
-      ${isMe ? 'Call your time' : `${esc(name)} calls their own time`} — how many seconds?</p>
+    ${session.mode === 'solo' ? `<p class="hint">Pass the phone to <b>${esc(name)}</b> — call your time.</p>` : ''}
     <div class="predictwrap">
       <input type="text" id="predIn" inputmode="decimal" autocomplete="off" placeholder="12">
       <span class="unit">sec</span>
@@ -909,11 +905,7 @@ function buildBetting(app) {
   const rows = bettableRows(others);
   app.innerHTML = `
     <div class="roundtag">Round ${r.n} · ${MODE_INFO.ou.icon} ${MODE_INFO.ou.name}</div>
-    <div class="callout"><b>${iChug ? 'You' : esc(chugger)}</b> ${iChug ? 'said' : 'says'} <span class="bigpred">${r.prediction}s</span><br>
-      <span style="font-size:14px;color:var(--muted)">${iChug ? 'Waiting for the bets to come in…'
-        : isRoom ? 'Your call — everyone’s picks are revealed once the bets are in.'
-        : 'Over or under? Guess wrong and you might chug next…'}</span>
-    </div>
+    <div class="callout"><b>${iChug ? 'You' : esc(chugger)}</b> ${iChug ? 'said' : 'says'} <span class="bigpred">${r.prediction}s</span></div>
     <div id="betrows" style="display:flex;flex-direction:column;gap:10px">
       ${rows.map(p => `
         <div class="betrow ${isRoom && p.id === me.id ? 'mine' : ''}" data-pid="${p.id}">
@@ -928,9 +920,7 @@ function buildBetting(app) {
         </div>`).join('')}
     </div>
     ${isRoom ? '<div class="statusrow" id="betstatus"></div>' : ''}
-    <div class="progress" id="betprog"></div>
     <button class="btn go" id="b-ready" disabled>To the stopwatch ▶</button>
-    <p class="hint" id="startHint"></p>
     ${isRoom && ui.helpBets !== r.n ? '<button class="linkbtn" id="b-helpbets">Someone without a phone? Bet for them</button>' : ''}`;
 
   $('#betrows').addEventListener('click', e => {
@@ -964,14 +954,9 @@ function patchBetting() {
   if (status) status.innerHTML = others.map(p =>
     `<span class="pill ${betDone(r.bets[p.id], 'ou') ? 'in' : ''}">${esc(p.name)} ${betDone(r.bets[p.id], 'ou') ? '✓' : '…'}</span>`).join('');
   const total = others.length;
-  $('#betprog').textContent = `${done}/${total} bets in`;
   const btn = $('#b-ready');
   btn.disabled = done === 0;
-  btn.textContent = done < total ? `To the stopwatch (${done}/${total} in) ▶` : 'Everyone’s in — to the stopwatch ▶';
-  $('#startHint').textContent = done === 0
-    ? 'Place at least one bet to continue.'
-    : (done < total ? 'You can move on without everyone — no bet means no point and no risk.'
-                    : 'Lock it. Bottoms up! 🍻');
+  btn.textContent = done < total ? `To the stopwatch (${done}/${total}) ▶` : 'To the stopwatch ▶';
 }
 
 /* ---------- guessing (Crystal Ball: everyone predicts the time) ---------- */
@@ -985,9 +970,7 @@ function buildGuessing(app) {
   app.innerHTML = `
     <div class="roundtag">Round ${r.n} · ${MODE_INFO.psychic.icon} ${MODE_INFO.psychic.name}</div>
     <div class="callout"><b>${iChug ? 'You are' : esc(chugger) + ' is'}</b> about to chug 🍺<br>
-      <span style="font-size:14px;color:var(--muted)">${iChug ? 'Waiting for the predictions…'
-        : isRoom ? 'Predict the exact time — predictions stay secret until everyone’s in.'
-        : 'Everyone predicts the exact time. Closest scores a point — furthest off chugs next.'}</span>
+      <span style="font-size:14px;color:var(--muted)">Call the exact time</span>
     </div>
     <div id="betrows" style="display:flex;flex-direction:column;gap:10px">
       ${rows.map(p => `
@@ -1002,9 +985,7 @@ function buildGuessing(app) {
         </div>`).join('')}
     </div>
     ${isRoom ? '<div class="statusrow" id="betstatus"></div>' : ''}
-    <div class="progress" id="betprog"></div>
     <button class="btn go" id="b-ready" disabled>To the stopwatch ▶</button>
-    <p class="hint" id="startHint"></p>
     ${isRoom && ui.helpBets !== r.n ? '<button class="linkbtn" id="b-helpbets">Someone without a phone? Predict for them</button>' : ''}`;
 
   $('#betrows').addEventListener('input', e => {
@@ -1042,14 +1023,9 @@ function patchGuessing() {
   if (status) status.innerHTML = others.map(p =>
     `<span class="pill ${betDone(r.bets[p.id], 'psychic') ? 'in' : ''}">${esc(p.name)} ${betDone(r.bets[p.id], 'psychic') ? '✓' : '…'}</span>`).join('');
   const total = others.length;
-  $('#betprog').textContent = `${done}/${total} predictions in`;
   const btn = $('#b-ready');
   btn.disabled = done === 0;
-  btn.textContent = done < total ? `To the stopwatch (${done}/${total} in) ▶` : 'Everyone’s in — to the stopwatch ▶';
-  $('#startHint').textContent = done === 0
-    ? 'At least one prediction to continue.'
-    : (done < total ? 'You can move on without everyone — no prediction, no point, no chug risk.'
-                    : 'All locked in. Bottoms up! 🍻');
+  btn.textContent = done < total ? `To the stopwatch (${done}/${total}) ▶` : 'To the stopwatch ▶';
 }
 
 async function goReady() {
@@ -1098,11 +1074,8 @@ function buildReady(app) {
     <div class="clockwrap"><div class="clock" id="clock">00:00.00</div></div>
     ${canStart ? `
       <button class="btn go" id="b-startclock" style="min-height:96px;font-size:28px">▶ START</button>
-      <p class="hint">${isRoom
-        ? (r.chuggerId === me.id ? 'Hit START and drink!' : `Hit START the moment ${esc(chugger)} starts drinking.`)
-        : `Hit START the moment ${esc(chugger)} starts drinking.`}</p>` : `
+      ${(isRoom && r.chuggerId === me.id) ? '' : `<p class="hint">Hit START the moment ${esc(chugger)} starts drinking.</p>`}` : `
       <div class="lockmsg thinking">⏱ Waiting for ${esc(chugger)} to hit START…</div>
-      <p class="hint">The clock runs on ${esc(chugger)}’s phone — you’ll see it live here.</p>
       <button class="linkbtn" id="b-takeover">${esc(chugger)} doesn’t have a phone? Start from here</button>`}`;
   if (canStart) $('#b-startclock').onclick = startClock;
   else $('#b-takeover').onclick = () => { ui.takeover = r.n; builtKey = null; render(); };
@@ -1208,7 +1181,7 @@ function buildResult(app) {
         <span class="mark ${res.correct ? 'ok' : 'no'}">${res.correct === null ? '–' : res.correct ? '✓ +1' : '✗'}</span>
       </div>`).join('');
     const wrongNames = entries.filter(([, res]) => res.correct === false).map(([pid]) => nameOf(S, pid));
-    if (wrongNames.length) sipLine = `<p class="hint">🍻 ${esc(wrongNames.join(', '))} got it wrong — take a drink!</p>`;
+    if (wrongNames.length) sipLine = `<p class="hint">🍻 ${esc(wrongNames.join(', '))} — drink!</p>`;
   }
 
   const reasonText = {
@@ -1221,12 +1194,6 @@ function buildResult(app) {
     'random':         'picked at random — nobody bet',
   }[r.nextReason] || '';
 
-  const wheelLabel = {
-    'wrong-wheel':     'Multiple wrong answers… wheel decides who chugs next!',
-    'all-right-wheel': 'Everyone was right — fate picks the next chugger!',
-    'tie-wheel':       'Tied for furthest off — wheel decides!',
-  }[r.nextReason] || 'Wheel decides who chugs next!';
-
   app.innerHTML = `
     <div class="roundtag">Round ${r.n} result</div>
     ${r.newRecord ? `<div class="recordbanner">🏆 NEW FASTEST CHUG EVER!</div>` : ''}
@@ -1234,9 +1201,7 @@ function buildResult(app) {
     ${vsLine}
     <div style="display:flex;flex-direction:column;gap:8px">${rows || '<p class="hint">No bets this round.</p>'}</div>
     ${sipLine}
-    ${r.wheelPool ? `
-      <p class="hint" style="font-weight:800;color:var(--yellow)">${wheelLabel}</p>
-      <div id="wheelbox"></div>` : ''}
+    ${r.wheelPool ? '<div id="wheelbox"></div>' : ''}
     <div class="nextup ${r.wheelPool ? 'hidden' : ''}" id="nextupbanner">🍺 <b>${esc(nextName)}</b> is up next
       ${reasonText ? `<span class="why">${reasonText}</span>` : ''}</div>
     ${isHost() ? '<button class="btn primary big" id="b-next">Next round ▶</button>'
