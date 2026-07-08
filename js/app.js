@@ -132,11 +132,22 @@ function newState(mode) {
   return {
     v: 2, mode, code: null, createdAt: Date.now(),
     gameMode: 'ou',
+    hostId: null, firstChugger: null, lobbySpin: null,
     players: [], phase: 'lobby',
     round: blankRound(0, null, 'ou'),
     history: [],
   };
 }
+
+/* The room creator is the host: only their phone starts rounds. If the
+   host ever drops out of the roster, the first remaining player takes over. */
+function effectiveHostId() {
+  if (!S || session?.mode !== 'room') return null;
+  if (S.hostId && S.players.some(p => p.id === S.hostId)) return S.hostId;
+  return S.players[0]?.id || null;
+}
+const isHost = () => session?.mode !== 'room' || effectiveHostId() === null || effectiveHostId() === me.id;
+const hostName = () => nameOf(S, effectiveHostId());
 const nameOf = (st, pid) => st.players.find(p => p.id === pid)?.name
   || st.history.flatMap(h => Object.entries(h.bets || {})).find(([id]) => id === pid)?.[1]?.name
   || '???';
@@ -680,7 +691,8 @@ function buildLobby(app) {
     </form>
     <h3>Who chugs first?</h3>
     <div class="pickwrap" id="firstPick"></div>
-    <button class="btn primary big" id="b-startgame" disabled>Start round 1 🍺</button>`;
+    <button class="btn primary big" id="b-startgame" disabled>Start round 1 🍺</button>
+    <div class="lockmsg thinking hidden" id="hostwait"></div>`;
 
   if (isRoom) $('#b-share').onclick = shareInvite;
   $('#modePick').onclick = e => {
@@ -708,48 +720,81 @@ function buildLobby(app) {
     if (chip.id === 'b-randompick') {
       const ps = S.players;
       if (!ps.length) return;
-      // roulette flash across the chips before landing on the winner
       const winner = ps[Math.random() * ps.length | 0];
-      const hops = ps.length * 2 + ps.findIndex(p => p.id === winner.id) + 1;
-      let i = 0;
-      ui.rouletteTimer = setInterval(() => {
-        ui.pickedChugger = ps[i % ps.length].id;
-        patchLobby();
-        vibrate(10);
-        if (++i >= hops) {
-          clearInterval(ui.rouletteTimer);
-          ui.rouletteTimer = null;
-          ui.pickedChugger = winner.id;
-          patchLobby();
-          toast(`🎲 ${winner.name} chugs first!`);
-          vibrate(60);
-        }
-      }, 110);
+      const spin = { winner: winner.id, ts: Date.now() };
+      ui.seenSpin = spin.ts;
+      ui.animPick = ps[0].id; // suppress the final answer flashing early
+      const st = clone(S);
+      st.firstChugger = winner.id;
+      st.lobbySpin = spin; // other phones play the same roulette when this lands
+      commit(st);
+      playRoulette(winner.id);
     } else {
-      ui.pickedChugger = chip.dataset.pid;
-      patchLobby();
+      const st = clone(S);
+      st.firstChugger = chip.dataset.pid;
+      commit(st);
     }
   };
   $('#b-startgame').onclick = startGame;
 }
 
+/* roulette flash across the name chips, landing on a predetermined winner */
+function playRoulette(winnerId) {
+  if (ui.rouletteTimer) return;
+  const ps = S.players;
+  const idx = Math.max(0, ps.findIndex(p => p.id === winnerId));
+  const hops = ps.length * 2 + idx + 1;
+  let i = 0;
+  ui.rouletteTimer = setInterval(() => {
+    if (!S || S.phase !== 'lobby') { clearInterval(ui.rouletteTimer); ui.rouletteTimer = null; ui.animPick = null; return; }
+    ui.animPick = ps[i % ps.length].id;
+    patchLobby();
+    vibrate(10);
+    if (++i >= hops) {
+      clearInterval(ui.rouletteTimer);
+      ui.rouletteTimer = null;
+      ui.animPick = null;
+      patchLobby();
+      toast(`🎲 ${nameOf(S, winnerId)} chugs first!`);
+      vibrate(60);
+    }
+  }, 110);
+}
+
 function patchLobby() {
   if (!$('#roster')) return;
+  // a fresh lobbySpin from another phone → play the same roulette here
+  if (S.lobbySpin && ui.seenSpin !== S.lobbySpin.ts) {
+    ui.seenSpin = S.lobbySpin.ts;
+    if (!ui.rouletteTimer && S.players.length > 1 && Math.abs(Date.now() - S.lobbySpin.ts) < 15000) {
+      playRoulette(S.lobbySpin.winner);
+    }
+  }
   $$('.modecard').forEach(c => c.classList.toggle('sel', c.dataset.m === gameMode()));
   $('#pcount').textContent = `(${S.players.length})`;
+  const hostId = effectiveHostId();
   $('#roster').innerHTML = S.players.map((p, i) => `
     <div class="rosterrow">
       <span class="avatar" style="background:${AVATAR_COLORS[i % AVATAR_COLORS.length]}">${esc(p.name[0]?.toUpperCase() || '?')}</span>
-      ${esc(p.name)}${p.id === me.id && session.mode === 'room' ? ' <span class="you" style="color:var(--cyan);font-size:13px">YOU</span>' : ''}
+      ${esc(p.name)}${p.id === hostId ? ' <span class="you" style="color:var(--yellow);font-size:13px">HOST</span>' : ''}${p.id === me.id && session.mode === 'room' ? ' <span class="you" style="color:var(--cyan);font-size:13px">YOU</span>' : ''}
       <button class="rm" data-pid="${p.id}" aria-label="Remove">✕</button>
     </div>`).join('') || '<p class="hint">Nobody yet — add at least 2 players.</p>';
-  if (ui.pickedChugger && !S.players.some(p => p.id === ui.pickedChugger)) ui.pickedChugger = null;
+  const selId = ui.animPick
+    || (S.firstChugger && S.players.some(p => p.id === S.firstChugger) ? S.firstChugger : null);
   $('#firstPick').innerHTML = S.players.map(p =>
-    `<button class="pickchip ${ui.pickedChugger === p.id ? 'sel' : ''}" data-pid="${p.id}">${esc(p.name)}</button>`
+    `<button class="pickchip ${selId === p.id ? 'sel' : ''}" data-pid="${p.id}">${esc(p.name)}</button>`
   ).join('') + `<button class="pickchip" id="b-randompick">🎲 Random</button>`;
-  const btn = $('#b-startgame');
-  btn.disabled = S.players.length < 2;
-  btn.textContent = S.players.length < 2 ? 'Need at least 2 players' : 'Start round 1 🍺';
+  const btn = $('#b-startgame'), wait = $('#hostwait');
+  if (isHost()) {
+    btn.classList.remove('hidden');
+    wait.classList.add('hidden');
+    btn.disabled = S.players.length < 2;
+    btn.textContent = S.players.length < 2 ? 'Need at least 2 players' : 'Start round 1 🍺';
+  } else {
+    btn.classList.add('hidden');
+    wait.classList.remove('hidden');
+    wait.textContent = `⏳ ${hostName()} (host) starts the game…`;
+  }
 }
 
 async function shareInvite() {
@@ -787,9 +832,9 @@ function removePlayer(pid) {
 }
 
 function startGame() {
-  if (S.players.length < 2) return;
-  const chugger = (ui.pickedChugger && S.players.some(p => p.id === ui.pickedChugger))
-    ? ui.pickedChugger
+  if (S.players.length < 2 || !isHost()) return;
+  const chugger = (S.firstChugger && S.players.some(p => p.id === S.firstChugger))
+    ? S.firstChugger
     : S.players[Math.random() * S.players.length | 0].id;
   const st = clone(S);
   const mode = gameMode();
@@ -1194,8 +1239,9 @@ function buildResult(app) {
       <div id="wheelbox"></div>` : ''}
     <div class="nextup ${r.wheelPool ? 'hidden' : ''}" id="nextupbanner">🍺 <b>${esc(nextName)}</b> is up next
       ${reasonText ? `<span class="why">${reasonText}</span>` : ''}</div>
-    <button class="btn primary big" id="b-next">Next round ▶</button>`;
-  $('#b-next').onclick = nextRoundAction;
+    ${isHost() ? '<button class="btn primary big" id="b-next">Next round ▶</button>'
+               : `<div class="lockmsg thinking">⏳ ${esc(hostName())} (host) starts the next round…</div>`}`;
+  if ($('#b-next')) $('#b-next').onclick = nextRoundAction;
   if (r.newRecord) { confetti(); vibrate([60, 40, 120]); }
 
   if (r.wheelPool) {
@@ -1210,7 +1256,7 @@ function buildResult(app) {
 }
 
 function nextRoundAction() {
-  if (!S || S.phase !== 'result') return;
+  if (!S || S.phase !== 'result' || !isHost()) return;
   const st = clone(S);
   const mode = gameMode();
   st.round = blankRound(st.round.n + 1, st.round.nextChuggerId, mode);
@@ -1287,6 +1333,7 @@ function openMenu() {
         <div class="bigcode">${esc(S.code)}</div>
         <button class="btn small yellow" id="mn-share" style="margin:8px auto 0">📤 Share invite</button>
       </div>` : ''}
+      ${isHost() ? `
       <div class="card">
         <h3 style="margin-top:0">Game mode</h3>
         <div class="pickwrap">
@@ -1294,16 +1341,25 @@ function openMenu() {
             <button class="pickchip ${gameMode() === m ? 'sel' : ''}" data-mode="${m}">${info.icon} ${info.name}</button>`).join('')}
         </div>
         <p class="hint" style="text-align:left;margin-top:8px">Applies from the next round.</p>
-      </div>
+      </div>` : ''}
       <div class="menulist">
+        ${isHost() ? `
         <button class="menubtn" id="mn-lobby">🏁 Back to lobby<span>pick the mode & who chugs first — scores stay</span></button>
-        <button class="menubtn" id="mn-reset">🔄 Reset scores<span>history and records stay</span></button>
+        <button class="menubtn" id="mn-reset">🔄 Reset scores<span>history and records stay</span></button>` : `
+        <p class="hint" style="text-align:left">${esc(hostName())} is the host — they control the game mode, rounds and resets.</p>`}
         <button class="menubtn danger" id="mn-leave">${isRoom ? '🚪 Leave room' : '🚪 Exit to home'}<span>${isRoom ? 'the game keeps going for the others' : 'your solo game stays saved'}</span></button>
       </div>
     </div>`;
   const close = () => ov.classList.add('hidden');
   $('#ov-close').onclick = close;
   if (isRoom) $('#mn-share').onclick = shareInvite;
+  if (!isHost()) {
+    $('#mn-leave').onclick = () => {
+      close();
+      askConfirm('Leave this room?<br><span class="sub">The game keeps going for everyone else.</span>', '🚪 Leave', leaveGame);
+    };
+    return;
+  }
   $$('#overlay [data-mode]').forEach(chip => chip.onclick = () => {
     if (chip.dataset.mode === S.gameMode) return;
     const st = clone(S);
@@ -1346,6 +1402,7 @@ async function createRoom(name) {
   backend = new SupaBackend(client);
   await backend.syncClock();
   const st = newState('room');
+  st.hostId = me.id;
   st.players = [{ id: me.id, name, score: 0 }];
   const code = await backend.create(st);
   st.code = code;
