@@ -293,7 +293,7 @@ h3 { margin: 4px 0; font-size: 16px; font-weight: 800; color: var(--muted); text
 .clock {
   font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
   font-variant-numeric: tabular-nums;
-  font-size: clamp(58px, 19vw, 96px);
+  font-size: clamp(40px, 13.5vw, 92px);
   font-weight: 500; letter-spacing: .01em; line-height: 1;
   color: #fff;
 }
@@ -402,6 +402,58 @@ h3 { margin: 4px 0; font-size: 16px; font-weight: 800; color: var(--muted); text
 .histrow { display: flex; gap: 10px; align-items: baseline; font-size: 14px; font-weight: 700; color: var(--muted); padding: 7px 4px; border-top: 1px solid #3a2570; }
 .histrow b { color: var(--ink); }
 .histrow .t { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--yellow); }
+
+/* -- bet status chips / reveal --------------------------------------------------- */
+.statusrow { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+.pill {
+  background: var(--card); border-radius: 999px;
+  padding: 6px 12px; font-size: 13px; font-weight: 800; color: var(--muted);
+}
+.pill.in { color: var(--green); }
+.revealwrap { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.revealchip {
+  background: var(--card); border-radius: 14px;
+  padding: 9px 12px; font-size: 15px; font-weight: 800;
+  display: flex; align-items: center; gap: 7px;
+  animation: slidein .35s ease backwards;
+}
+.revealchip .chip { font-size: 11px; font-weight: 900; border-radius: 999px; padding: 3px 9px; }
+.revealchip .chip.over { background: var(--pink); color: #fff; }
+.revealchip .chip.under { background: var(--cyan); color: #062c33; }
+
+/* -- menu / confirm ---------------------------------------------------------------- */
+.menulist { display: flex; flex-direction: column; gap: 8px; }
+.menubtn {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+  background: var(--card); border: none; border-radius: 16px;
+  color: var(--ink); font-family: inherit; font-size: 17px; font-weight: 800;
+  padding: 14px 16px; cursor: pointer; text-align: left;
+}
+.menubtn:active { transform: scale(.98); }
+.menubtn span { font-size: 13px; color: var(--muted); font-weight: 600; }
+.menubtn.danger { color: var(--red); }
+#confirmbox {
+  position: fixed; inset: 0; z-index: 70;
+  background: rgba(10, 4, 24, .8);
+  backdrop-filter: blur(6px);
+  display: grid; place-items: center; padding: 24px;
+}
+.confirmcard {
+  background: var(--card2); border-radius: 22px;
+  padding: 20px; max-width: 340px; width: 100%;
+  box-shadow: 0 6px 0 var(--shadow);
+}
+.confirmcard p { margin: 0 0 16px; font-size: 18px; font-weight: 800; text-align: center; line-height: 1.4; }
+.confirmcard p .sub { font-size: 14px; font-weight: 600; color: var(--muted); }
+.confirmbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.btn.dim { background: #3a2570; color: var(--muted); }
+.famerow {
+  display: flex; gap: 8px; align-items: baseline;
+  font-size: 15px; font-weight: 700; color: var(--muted);
+  padding: 7px 4px;
+}
+.famerow b { color: var(--ink); }
+.famerow .t { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--yellow); font-weight: 800; }
 
 /* -- toast / confetti ---------------------------------------------------------- */
 #toast {

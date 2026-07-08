@@ -23,6 +23,11 @@ const uid = () => (crypto.randomUUID ? crypto.randomUUID().replace(/-/g, '') :
   Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)).slice(0, 10);
 const clone = o => JSON.parse(JSON.stringify(o));
 const clamp2 = x => Math.round(x * 100) / 100;
+// phones with EU keyboards type "5,5" — accept both comma and dot
+const parseSec = v => {
+  const n = parseFloat(String(v ?? '').trim().replace(',', '.'));
+  return isFinite(n) ? n : NaN;
+};
 const pad2 = n => String(n).padStart(2, '0');
 const secs = x => `${(+x).toFixed(2)}s`;
 const CODE_LETTERS = 'ABCDEFGHJKMNPQRSTUVWXYZ';
@@ -46,6 +51,23 @@ function toast(msg, ms = 2600) {
   t.classList.remove('hidden');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.add('hidden'), ms);
+}
+
+// styled replacement for window.confirm — msg may contain markup
+function askConfirm(msg, okLabel, onOk) {
+  const box = $('#confirmbox');
+  box.classList.remove('hidden');
+  box.innerHTML = `
+    <div class="confirmcard">
+      <p>${msg}</p>
+      <div class="confirmbtns">
+        <button class="btn small dim" id="cf-no">Cancel</button>
+        <button class="btn small yellow" id="cf-yes">${okLabel}</button>
+      </div>
+    </div>`;
+  $('#cf-no').onclick = () => box.classList.add('hidden');
+  $('#cf-yes').onclick = () => { box.classList.add('hidden'); onOk(); };
+  box.onclick = e => { if (e.target === box) box.classList.add('hidden'); };
 }
 
 function confetti() {
@@ -803,12 +825,12 @@ function buildPredict(app) {
     <p class="hint">${session.mode === 'solo' ? `Pass the phone to <b>${esc(name)}</b>.` : ''}
       ${isMe ? 'Call your time' : `${esc(name)} calls their own time`} — how many seconds?</p>
     <div class="predictwrap">
-      <input type="number" id="predIn" inputmode="decimal" step="0.1" min="0" placeholder="12">
+      <input type="text" id="predIn" inputmode="decimal" autocomplete="off" placeholder="12">
       <span class="unit">sec</span>
     </div>
     <button class="btn primary big" id="b-lock">Lock it in 🔒</button>`;
   const lock = () => {
-    const v = parseFloat($('#predIn').value);
+    const v = parseSec($('#predIn').value);
     if (!isFinite(v) || v <= 0 || v > 3600) { toast('Enter the prediction in seconds'); return; }
     if (S.phase !== 'predict') return;
     const st = clone(S);
@@ -822,21 +844,36 @@ function buildPredict(app) {
   $('#predIn').focus();
 }
 
-/* ---------- betting (Over/Under: big OVER / UNDER buttons only) ---------- */
+/* ---------- betting (Over/Under: big OVER / UNDER buttons only) ----------
+   Room mode: each phone only places its own bet — everyone else shows as an
+   anonymous "in / waiting" chip, and all calls are revealed on the ready
+   screen. Solo mode keeps all rows (pass-the-phone). A link reveals the
+   full rows for players who were added without a phone. */
+function bettableRows(others) {
+  const isRoom = session.mode === 'room';
+  if (!isRoom || ui.helpBets === S.round.n) return others;
+  return others.filter(p => p.id === me.id);
+}
+
 function buildBetting(app) {
   const r = S.round;
   const chugger = nameOf(S, r.chuggerId);
   const others = S.players.filter(p => p.id !== r.chuggerId);
+  const isRoom = session.mode === 'room';
+  const iChug = isRoom && r.chuggerId === me.id;
+  const rows = bettableRows(others);
   app.innerHTML = `
     <div class="roundtag">Round ${r.n} · ${MODE_INFO.ou.icon} ${MODE_INFO.ou.name}</div>
-    <div class="callout"><b>${esc(chugger)}</b> says <span class="bigpred">${r.prediction}s</span><br>
-      <span style="font-size:14px;color:var(--muted)">Over or under? Guess wrong and you might chug next…</span>
+    <div class="callout"><b>${iChug ? 'You' : esc(chugger)}</b> ${iChug ? 'said' : 'says'} <span class="bigpred">${r.prediction}s</span><br>
+      <span style="font-size:14px;color:var(--muted)">${iChug ? 'Waiting for the bets to come in…'
+        : isRoom ? 'Your call — everyone’s picks are revealed once the bets are in.'
+        : 'Over or under? Guess wrong and you might chug next…'}</span>
     </div>
     <div id="betrows" style="display:flex;flex-direction:column;gap:10px">
-      ${others.map(p => `
-        <div class="betrow ${session.mode === 'room' && p.id === me.id ? 'mine' : ''}" data-pid="${p.id}">
+      ${rows.map(p => `
+        <div class="betrow ${isRoom && p.id === me.id ? 'mine' : ''}" data-pid="${p.id}">
           <div class="betname">${esc(p.name)}
-            ${session.mode === 'room' && p.id === me.id ? '<span class="you">you</span>' : ''}
+            ${isRoom && p.id === me.id ? '<span class="you">you</span>' : ''}
             <span class="in hidden">✓ in</span>
           </div>
           <div class="betctl two">
@@ -845,9 +882,11 @@ function buildBetting(app) {
           </div>
         </div>`).join('')}
     </div>
+    ${isRoom ? '<div class="statusrow" id="betstatus"></div>' : ''}
     <div class="progress" id="betprog"></div>
     <button class="btn go" id="b-ready" disabled>To the stopwatch ▶</button>
-    <p class="hint" id="startHint"></p>`;
+    <p class="hint" id="startHint"></p>
+    ${isRoom && ui.helpBets !== r.n ? '<button class="linkbtn" id="b-helpbets">Someone without a phone? Bet for them</button>' : ''}`;
 
   $('#betrows').addEventListener('click', e => {
     const seg = e.target.closest('.seg');
@@ -856,6 +895,7 @@ function buildBetting(app) {
     setLocalBet(pid, { choice: seg.dataset.c });
     vibrate(15);
   });
+  if ($('#b-helpbets')) $('#b-helpbets').onclick = () => { ui.helpBets = r.n; builtKey = null; render(); };
   $('#b-ready').onclick = goReady;
   patchBetting();
 }
@@ -866,15 +906,18 @@ function patchBetting() {
   const others = S.players.filter(p => p.id !== r.chuggerId);
   let done = 0;
   for (const p of others) {
-    const row = $(`.betrow[data-pid="${p.id}"]`);
-    if (!row) continue;
     const bet = r.bets[p.id] || {};
     const complete = betDone(bet, 'ou');
     if (complete) done++;
+    const row = $(`.betrow[data-pid="${p.id}"]`);
+    if (!row) continue;
     $$('.seg', row).forEach(b => b.classList.toggle('sel', bet.choice === b.dataset.c));
     row.classList.toggle('done', complete);
     $('.in', row).classList.toggle('hidden', !complete);
   }
+  const status = $('#betstatus');
+  if (status) status.innerHTML = others.map(p =>
+    `<span class="pill ${betDone(r.bets[p.id], 'ou') ? 'in' : ''}">${esc(p.name)} ${betDone(r.bets[p.id], 'ou') ? '✓' : '…'}</span>`).join('');
   const total = others.length;
   $('#betprog').textContent = `${done}/${total} bets in`;
   const btn = $('#b-ready');
@@ -891,34 +934,42 @@ function buildGuessing(app) {
   const r = S.round;
   const chugger = nameOf(S, r.chuggerId);
   const others = S.players.filter(p => p.id !== r.chuggerId);
+  const isRoom = session.mode === 'room';
+  const iChug = isRoom && r.chuggerId === me.id;
+  const rows = bettableRows(others);
   app.innerHTML = `
     <div class="roundtag">Round ${r.n} · ${MODE_INFO.psychic.icon} ${MODE_INFO.psychic.name}</div>
-    <div class="callout"><b>${esc(chugger)}</b> is about to chug 🍺<br>
-      <span style="font-size:14px;color:var(--muted)">Everyone predicts the exact time. Closest scores a point — furthest off chugs next.</span>
+    <div class="callout"><b>${iChug ? 'You are' : esc(chugger) + ' is'}</b> about to chug 🍺<br>
+      <span style="font-size:14px;color:var(--muted)">${iChug ? 'Waiting for the predictions…'
+        : isRoom ? 'Predict the exact time — predictions stay secret until everyone’s in.'
+        : 'Everyone predicts the exact time. Closest scores a point — furthest off chugs next.'}</span>
     </div>
     <div id="betrows" style="display:flex;flex-direction:column;gap:10px">
-      ${others.map(p => `
-        <div class="betrow ${session.mode === 'room' && p.id === me.id ? 'mine' : ''}" data-pid="${p.id}">
+      ${rows.map(p => `
+        <div class="betrow ${isRoom && p.id === me.id ? 'mine' : ''}" data-pid="${p.id}">
           <div class="betname">${esc(p.name)}
-            ${session.mode === 'room' && p.id === me.id ? '<span class="you">you</span>' : ''}
+            ${isRoom && p.id === me.id ? '<span class="you">you</span>' : ''}
             <span class="in hidden">✓ in</span>
           </div>
           <div class="betctl solo">
-            <input class="guess" type="number" inputmode="decimal" step="0.1" min="0" placeholder="seconds">
+            <input class="guess" type="text" inputmode="decimal" autocomplete="off" placeholder="seconds">
           </div>
         </div>`).join('')}
     </div>
+    ${isRoom ? '<div class="statusrow" id="betstatus"></div>' : ''}
     <div class="progress" id="betprog"></div>
     <button class="btn go" id="b-ready" disabled>To the stopwatch ▶</button>
-    <p class="hint" id="startHint"></p>`;
+    <p class="hint" id="startHint"></p>
+    ${isRoom && ui.helpBets !== r.n ? '<button class="linkbtn" id="b-helpbets">Someone without a phone? Predict for them</button>' : ''}`;
 
   $('#betrows').addEventListener('input', e => {
     const g = e.target.closest('.guess');
     if (!g) return;
     const pid = g.closest('.betrow').dataset.pid;
-    const v = parseFloat(g.value);
+    const v = parseSec(g.value);
     setLocalBet(pid, { guess: isFinite(v) && v >= 0 ? clamp2(v) : null });
   });
+  if ($('#b-helpbets')) $('#b-helpbets').onclick = () => { ui.helpBets = r.n; builtKey = null; render(); };
   $('#b-ready').onclick = goReady;
   patchGuessing();
 }
@@ -929,11 +980,11 @@ function patchGuessing() {
   const others = S.players.filter(p => p.id !== r.chuggerId);
   let done = 0;
   for (const p of others) {
-    const row = $(`.betrow[data-pid="${p.id}"]`);
-    if (!row) continue;
     const bet = r.bets[p.id] || {};
     const complete = betDone(bet, 'psychic');
     if (complete) done++;
+    const row = $(`.betrow[data-pid="${p.id}"]`);
+    if (!row) continue;
     const g = $('.guess', row);
     if (document.activeElement !== g) {
       const val = bet.guess == null ? '' : String(bet.guess);
@@ -942,6 +993,9 @@ function patchGuessing() {
     row.classList.toggle('done', complete);
     $('.in', row).classList.toggle('hidden', !complete);
   }
+  const status = $('#betstatus');
+  if (status) status.innerHTML = others.map(p =>
+    `<span class="pill ${betDone(r.bets[p.id], 'psychic') ? 'in' : ''}">${esc(p.name)} ${betDone(r.bets[p.id], 'psychic') ? '✓' : '…'}</span>`).join('');
   const total = others.length;
   $('#betprog').textContent = `${done}/${total} predictions in`;
   const btn = $('#b-ready');
@@ -979,15 +1033,23 @@ function buildReady(app) {
   // room mode: the stopwatch belongs to the chugger's phone (with a
   // takeover link for chuggers who don't have their own device)
   const canStart = !isRoom || r.chuggerId === me.id || ui.takeover === r.n;
-  const guesses = Object.values(r.bets).filter(b => typeof b.guess === 'number').map(b => b.guess);
+  // the reveal: everyone's (until now secret) calls, side by side
+  const reveal = S.players
+    .filter(p => p.id !== r.chuggerId && betDone(r.bets[p.id], mode))
+    .map(p => {
+      const b = r.bets[p.id];
+      return `<span class="revealchip"><b>${esc(p.name)}</b> ${mode === 'psychic'
+        ? esc(String(b.guess)) + 's'
+        : `<span class="chip ${b.choice}">${b.choice.toUpperCase()}</span>`}</span>`;
+    }).join('');
   app.innerHTML = `
     <div class="roundtag">Round ${r.n} · get ready</div>
     <div class="callout">
       ${mode === 'psychic'
-        ? `<b>${esc(chugger)}</b>, drink when the clock starts!<br>
-           <span style="font-size:14px;color:var(--muted)">${guesses.length} prediction${guesses.length === 1 ? '' : 's'} in${guesses.length ? ` · ${Math.min(...guesses)}s – ${Math.max(...guesses)}s` : ''}</span>`
+        ? `<b>${esc(chugger)}</b>, drink when the clock starts!`
         : `<b>${esc(chugger)}</b> says <span class="bigpred">${r.prediction}s</span>`}
     </div>
+    ${reveal ? `<div class="revealwrap">${reveal}</div>` : ''}
     <div class="clockwrap"><div class="clock" id="clock">00:00.00</div></div>
     ${canStart ? `
       <button class="btn go" id="b-startclock" style="min-height:96px;font-size:28px">▶ START</button>
@@ -1156,7 +1218,7 @@ function nextRoundAction() {
   commit(st);
 }
 
-/* ---------- stats overlay ---------- */
+/* ---------- stats overlay (pure stats — actions live in the menu) ---------- */
 function openStats() {
   const ov = $('#overlay');
   ov.classList.remove('hidden');
@@ -1165,29 +1227,33 @@ function openStats() {
   ov.innerHTML = `
     <div class="ovl-inner">
       <div class="ovl-head"><h2>📊 Stats</h2><button class="hbtn" id="ov-close">✕</button></div>
-      ${!stats ? '<p class="hint">No rounds played yet. Stats show up after the first chug.</p>' : `
+      ${!stats ? '<p class="hint">No rounds played yet — stats show up after the first chug.</p>' : `
       <div class="statgrid">
-        <div class="statcard"><div class="lbl">⚡ Fastest ever</div>
+        <div class="statcard"><div class="lbl">⚡ Fastest</div>
           <div class="val">${secs(stats.fastest.actual)}</div>
           <div class="who">${esc(stats.fastest.chuggerName)}</div></div>
-        <div class="statcard"><div class="lbl">🐌 Slowest ever</div>
+        <div class="statcard"><div class="lbl">🐌 Slowest</div>
           <div class="val">${secs(stats.slowest.actual)}</div>
           <div class="who">${esc(stats.slowest.chuggerName)}</div></div>
-        <div class="statcard"><div class="lbl">Average chug</div>
-          <div class="val">${secs(stats.avg)}</div></div>
-        <div class="statcard"><div class="lbl">Rounds played</div>
-          <div class="val">${stats.rounds}</div></div>
-        <div class="statcard"><div class="lbl">🎲 Best O/U caller</div>
-          <div class="val">${stats.bestCaller ? Math.round(stats.bestCaller.ouRate * 100) + '%' : '—'}</div>
-          <div class="who">${stats.bestCaller ? `${esc(stats.bestCaller.name)} (${stats.bestCaller.ouW}/${stats.bestCaller.ouN})` : ''}</div></div>
-        <div class="statcard"><div class="lbl">🔮 Best psychic</div>
-          <div class="val">${stats.bestPsychic ? '±' + secs(stats.bestPsychic.psyAvg) : '—'}</div>
-          <div class="who">${stats.bestPsychic ? esc(stats.bestPsychic.name) : ''}</div></div>
+        <div class="statcard"><div class="lbl">Average</div>
+          <div class="val">${secs(stats.avg)}</div>
+          <div class="who">&nbsp;</div></div>
+        <div class="statcard"><div class="lbl">Rounds</div>
+          <div class="val">${stats.rounds}</div>
+          <div class="who">&nbsp;</div></div>
       </div>
+      ${stats.bestCaller || stats.bestPsychic ? `
+      <div class="card">
+        <h3 style="margin-top:0">Hall of fame</h3>
+        ${stats.bestCaller ? `<div class="famerow">🎲 <b>${esc(stats.bestCaller.name)}</b> calls it best
+          <span class="t">${Math.round(stats.bestCaller.ouRate * 100)}% (${stats.bestCaller.ouW}/${stats.bestCaller.ouN})</span></div>` : ''}
+        ${stats.bestPsychic ? `<div class="famerow">🔮 <b>${esc(stats.bestPsychic.name)}</b> sees the future
+          <span class="t">±${secs(stats.bestPsychic.psyAvg)}</span></div>` : ''}
+      </div>` : ''}
       <div class="card">
         <h3 style="margin-top:0">Per player</h3>
         <table class="ptable">
-          <tr><th>Player</th><th>Avg chug</th><th>O/U calls</th><th>Psychic</th></tr>
+          <tr><th>Player</th><th>Avg chug</th><th>O/U</th><th>Psychic</th></tr>
           ${per.map(([pid, p]) => `
             <tr><td>${esc(p.name)}</td>
               <td>${p.avgChug != null ? secs(p.avgChug) : '—'}</td>
@@ -1196,47 +1262,80 @@ function openStats() {
         </table>
       </div>
       <div class="card">
-        <h3 style="margin-top:0">Recent rounds</h3>
-        ${[...S.history].reverse().slice(0, 12).map(h => `
-          <div class="histrow"><span>#${h.n}</span>
-            <span>${MODE_INFO[h.mode || 'ou'].icon}</span>
+        <h3 style="margin-top:0">Last rounds</h3>
+        ${[...S.history].reverse().slice(0, 6).map(h => `
+          <div class="histrow"><span>#${h.n} ${MODE_INFO[h.mode || 'ou'].icon}</span>
             <b>${esc(h.chuggerName)}</b>
             ${h.prediction != null ? `<span>said ${secs(h.prediction)}</span>` : ''}
             <span class="t">${secs(h.actual)}</span></div>`).join('')}
       </div>`}
+    </div>`;
+  $('#ov-close').onclick = () => ov.classList.add('hidden');
+}
+
+/* ---------- menu overlay ---------- */
+function openMenu() {
+  const ov = $('#overlay');
+  ov.classList.remove('hidden');
+  const isRoom = session.mode === 'room';
+  ov.innerHTML = `
+    <div class="ovl-inner">
+      <div class="ovl-head"><h2>Menu</h2><button class="hbtn" id="ov-close">✕</button></div>
+      ${isRoom ? `
+      <div class="codecard">
+        <div class="sub">ROOM CODE</div>
+        <div class="bigcode">${esc(S.code)}</div>
+        <button class="btn small yellow" id="mn-share" style="margin:8px auto 0">📤 Share invite</button>
+      </div>` : ''}
       <div class="card">
-        <h3 style="margin-top:0">Game mode (next round)</h3>
+        <h3 style="margin-top:0">Game mode</h3>
         <div class="pickwrap">
           ${Object.entries(MODE_INFO).map(([m, info]) => `
             <button class="pickchip ${gameMode() === m ? 'sel' : ''}" data-mode="${m}">${info.icon} ${info.name}</button>`).join('')}
         </div>
+        <p class="hint" style="text-align:left;margin-top:8px">Applies from the next round.</p>
       </div>
-      <button class="btn small yellow" id="ov-lobby" style="margin:0 auto">🏁 Back to lobby (pick mode & first chugger)</button>
-      <button class="btn small yellow" id="ov-reset" style="margin:0 auto">🔄 Reset scores (keep history)</button>
+      <div class="menulist">
+        <button class="menubtn" id="mn-lobby">🏁 Back to lobby<span>pick the mode & who chugs first — scores stay</span></button>
+        <button class="menubtn" id="mn-reset">🔄 Reset scores<span>history and records stay</span></button>
+        <button class="menubtn danger" id="mn-leave">${isRoom ? '🚪 Leave room' : '🚪 Exit to home'}<span>${isRoom ? 'the game keeps going for the others' : 'your solo game stays saved'}</span></button>
+      </div>
     </div>`;
-  $('#ov-close').onclick = () => ov.classList.add('hidden');
+  const close = () => ov.classList.add('hidden');
+  $('#ov-close').onclick = close;
+  if (isRoom) $('#mn-share').onclick = shareInvite;
   $$('#overlay [data-mode]').forEach(chip => chip.onclick = () => {
     if (chip.dataset.mode === S.gameMode) return;
     const st = clone(S);
     st.gameMode = chip.dataset.mode;
     commit(st);
-    ov.classList.add('hidden');
+    close();
     toast(`${MODE_INFO[chip.dataset.mode].icon} ${MODE_INFO[chip.dataset.mode].name} from the next round`);
   });
-  $('#ov-lobby').onclick = () => {
-    const st = clone(S);
-    st.phase = 'lobby';
-    st.round = blankRound(st.history.at(-1)?.n || 0, null, st.gameMode);
-    commit(st);
-    ov.classList.add('hidden');
+  $('#mn-lobby').onclick = () => {
+    close();
+    askConfirm('Back to the lobby?<br><span class="sub">The current round is scrapped — scores and history stay.</span>', '🏁 To the lobby', () => {
+      const st = clone(S);
+      st.phase = 'lobby';
+      st.round = blankRound(st.history.at(-1)?.n || 0, null, st.gameMode);
+      commit(st);
+    });
   };
-  $('#ov-reset').onclick = () => {
-    if (!confirm('Reset everyone’s score to 0?')) return;
-    const st = clone(S);
-    st.players.forEach(p => p.score = 0);
-    commit(st);
-    ov.classList.add('hidden');
-    toast('Scores reset');
+  $('#mn-reset').onclick = () => {
+    close();
+    askConfirm('Reset everyone’s score to 0?<br><span class="sub">All-time stats and records stay.</span>', '🔄 Reset', () => {
+      const st = clone(S);
+      st.players.forEach(p => p.score = 0);
+      commit(st);
+      toast('Scores reset');
+    });
+  };
+  $('#mn-leave').onclick = () => {
+    close();
+    askConfirm(isRoom
+      ? 'Leave this room?<br><span class="sub">The game keeps going for everyone else.</span>'
+      : 'Exit to the home screen?<br><span class="sub">Your solo game is saved.</span>',
+      '🚪 Leave', leaveGame);
   };
 }
 
@@ -1333,12 +1432,7 @@ async function resume() {
 }
 
 /* ---------- global wiring ---------- */
-$('#h-exit').onclick = () => {
-  const msg = session?.mode === 'room'
-    ? 'Leave this room? (The game keeps going for everyone else.)'
-    : 'Exit to the home screen? Your solo game is saved.';
-  if (confirm(msg)) leaveGame();
-};
+$('#h-menu').onclick = () => S && openMenu();
 $('#h-stats').onclick = () => S && openStats();
 
 document.addEventListener('visibilitychange', async () => {
