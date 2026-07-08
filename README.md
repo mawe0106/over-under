@@ -11,7 +11,7 @@ else just picks OVER or UNDER. Correct calls score a point. Whoever called it
 the **spinning wheel**, which picks the next chugger. (Everyone right? The wheel
 spins over all of you — someone has to drink.)
 
-**🔮 Chugstradamus** — everyone *except* the chugger predicts the exact time in
+**🔮 Crystal Ball** — everyone *except* the chugger predicts the exact time in
 seconds. Closest prediction scores a point; furthest off chugs next (ties spin
 the wheel). The chugger doesn't predict anything — they just drink.
 
@@ -53,7 +53,7 @@ after 24h idle); the backend is permanent.
 ## How a round works
 
 1. **Predict** — Over/Under: the chugger calls their time on *their own phone*
-   while everyone else sees "Jamie is thinking…". Chugstradamus: everyone else
+   while everyone else sees "Jamie is thinking…". Crystal Ball: everyone else
    enters their exact prediction.
 2. **Bet** — Over/Under only: big OVER/UNDER buttons per player.
 3. **Ready** — the stopwatch screen shows `00:00.00` armed with a manual

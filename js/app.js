@@ -6,7 +6,7 @@
      'ou'      Over/Under — the chugger calls their own time, everyone
                else just bets OVER or UNDER. Wrong callers are up next
                (one wrong → straight up; several wrong → spinning wheel).
-     'psychic' Chugstradamus — everyone except the chugger predicts the
+     'psychic' Crystal Ball — everyone except the chugger predicts the
                exact time. Closest scores a point, furthest off chugs
                next (ties → spinning wheel).
 
@@ -113,7 +113,7 @@ let backend = null;
 
 const MODE_INFO = {
   ou:      { icon: '🎲', name: 'Over/Under',    blurb: 'Chugger calls their time, the rest bet over or under. Get it wrong and you might be up next…' },
-  psychic: { icon: '🔮', name: 'Chugstradamus', blurb: 'Everyone predicts the exact time. Closest scores, furthest off chugs next.' },
+  psychic: { icon: '🔮', name: 'Crystal Ball', blurb: 'Everyone predicts the exact time. Closest scores, furthest off chugs next.' },
 };
 const gameMode = () => (S && MODE_INFO[S.gameMode]) ? S.gameMode : 'ou';
 
@@ -974,7 +974,7 @@ function patchBetting() {
                     : 'Lock it. Bottoms up! 🍻');
 }
 
-/* ---------- guessing (Chugstradamus: everyone predicts the time) ---------- */
+/* ---------- guessing (Crystal Ball: everyone predicts the time) ---------- */
 function buildGuessing(app) {
   const r = S.round;
   const chugger = nameOf(S, r.chuggerId);
@@ -1299,7 +1299,7 @@ function openStats() {
       <div class="card">
         <h3 style="margin-top:0">Per player</h3>
         <table class="ptable">
-          <tr><th>Player</th><th>Avg chug</th><th>O/U</th><th>Psychic</th></tr>
+          <tr><th>Player</th><th>Avg chug</th><th>O/U</th><th>🔮</th></tr>
           ${per.map(([pid, p]) => `
             <tr><td>${esc(p.name)}</td>
               <td>${p.avgChug != null ? secs(p.avgChug) : '—'}</td>
