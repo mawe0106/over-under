@@ -114,13 +114,16 @@ let backend = null;
 const MODE_INFO = {
   ou:      { icon: '🎲', name: 'Over/Under',    blurb: 'Bet over or under the chugger’s call — wrong callers risk the wheel.' },
   psychic: { icon: '🔮', name: 'Crystal Ball', blurb: 'Predict the exact time — closest scores, furthest off chugs next.' },
+  eagle:   { icon: '👁️', name: 'Eagle Eye',    blurb: 'Photo a poured glass — AI counts the ml. Furthest guess chugs it.' },
 };
 const gameMode = () => (S && MODE_INFO[S.gameMode]) ? S.gameMode : 'ou';
+const isEagle = r => (r?.mode || 'ou') === 'eagle';
 
 /* ---------- game state ---------- */
 function blankRound(n, chuggerId, mode) {
   return {
     n, chuggerId, mode,
+    pourerId: null, estimate: null,   // Eagle Eye only
     prediction: null, bets: {},
     timerOwner: null, timerOwnerName: null, startAt: null,
     actual: null, results: null,
@@ -221,6 +224,7 @@ class SupaBackend {
   save(state)            { return this.rpc('save_state', { p_code: state.code, p_state: state }); }
   setBet(code, pid, bet) { return this.rpc('set_bet', { p_code: code, p_player_id: pid, p_bet: bet }); }
   setPhase(code, from, to) { return this.rpc('set_phase', { p_code: code, p_from: from, p_to: to }); }
+  setEstimate(code, roundN, est) { return this.rpc('set_estimate', { p_code: code, p_round: roundN, p_estimate: est }); }
   async claimTimer(code, pid, name) {
     const startAt = await this.rpc('claim_timer', { p_code: code, p_player_id: pid, p_player_name: name });
     return startAt == null ? null : Number(startAt);
@@ -323,7 +327,13 @@ function finishRound(actual) {
   const award = pid => { const p = st.players.find(p => p.id === pid); if (p) p.score++; };
 
   let pool = [], reason = 'random';
-  if (mode === 'psychic') {
+  if (mode === 'eagle') {
+    // scoring already happened at the reveal; just record the chug and
+    // hand the next pour to whoever drank
+    Object.assign(results, r.results || {});
+    pool = [r.chuggerId];
+    reason = 'eagle-pour';
+  } else if (mode === 'psychic') {
     for (const [pid, bet] of Object.entries(r.bets)) {
       if (!betDone(bet, mode)) continue;
       results[pid] = { guess: bet.guess, diff: clamp2(Math.abs(bet.guess - actual)) };
@@ -362,6 +372,7 @@ function finishRound(actual) {
     pool = st.players.filter(p => p.id !== r.chuggerId).map(p => p.id);
     reason = 'random';
   }
+  if (mode === 'eagle') pool = [r.chuggerId]; // never rerolled by the fallback
   r.results = results;
   r.nextChuggerId = pool.length ? pool[Math.random() * pool.length | 0] : r.chuggerId;
   r.nextReason = reason;
@@ -374,6 +385,7 @@ function finishRound(actual) {
     n: r.n, ts: Date.now(), mode,
     chuggerId: r.chuggerId, chuggerName: nameOf(st, r.chuggerId),
     prediction: r.prediction, actual,
+    ml: mode === 'eagle' ? (r.estimate?.estimated_ml ?? null) : undefined,
     bets: Object.fromEntries(Object.entries(results).map(([pid, res]) =>
       [pid, { name: nameOf(st, pid), ...res }])),
     nextChuggerId: r.nextChuggerId,
@@ -391,11 +403,18 @@ function computeStats(st) {
 
   const per = {}; // pid -> aggregates
   const P = pid => (per[pid] ||= { name: '', chugs: [], ouW: 0, ouL: 0, psySum: 0, psyN: 0, psyWins: 0 });
+  let bestSpeed = null; // Eagle Eye: fastest ml/s ever
   for (const h of H) {
     const mode = h.mode || 'ou';
     const c = P(h.chuggerId);
     c.name = h.chuggerName;
     c.chugs.push(h.actual);
+    if (mode === 'eagle' && h.ml && h.actual) {
+      const speed = h.ml / h.actual;
+      if (!bestSpeed || speed > bestSpeed.speed) {
+        bestSpeed = { speed, name: h.chuggerName, ml: h.ml, seconds: h.actual };
+      }
+    }
     for (const [pid, b] of Object.entries(h.bets || {})) {
       const g = P(pid);
       g.name = b.name;
@@ -418,7 +437,7 @@ function computeStats(st) {
         (p.ouRate === bestCaller.ouRate && n > bestCaller.ouN))) bestCaller = { pid, ...p };
     if (p.psyAvg != null && (!bestPsychic || p.psyAvg < bestPsychic.psyAvg)) bestPsychic = { pid, ...p };
   }
-  return { rounds: H.length, fastest, slowest, avg, per, bestCaller, bestPsychic };
+  return { rounds: H.length, fastest, slowest, avg, per, bestCaller, bestPsychic, bestSpeed };
 }
 
 /* ---------- spinning wheel ---------- */
@@ -490,8 +509,10 @@ function screenKey() {
   switch (S.phase) {
     case 'lobby':    return 'lobby';
     case 'predict':  return `predict:${S.round.n}`;
+    case 'pouring':  return `pouring:${S.round.n}`;
     case 'betting':  return `betting:${S.round.n}:${S.players.length}`;
     case 'guessing': return `guessing:${S.round.n}:${S.players.length}`;
+    case 'reveal':   return `reveal:${S.round.n}`;
     case 'ready':    return `ready:${S.round.n}`;
     case 'running':  return `running:${S.round.n}`;
     case 'result':   return `result:${S.round.n}`;
@@ -542,7 +563,8 @@ function buildScreen(key) {
     ({ home: buildHome, newroom: buildNewRoom, join: buildJoin }[key.split(':')[1]] || buildHome)(app);
     return;
   }
-  ({ lobby: buildLobby, predict: buildPredict, betting: buildBetting, guessing: buildGuessing,
+  ({ lobby: buildLobby, predict: buildPredict, pouring: buildPouring,
+     betting: buildBetting, guessing: buildGuessing, reveal: buildReveal,
      ready: buildReady, running: buildRunning, result: buildResult }[kind])(app);
 }
 
@@ -831,13 +853,20 @@ function removePlayer(pid) {
 
 function startGame() {
   if (S.players.length < 2 || !isHost()) return;
-  const chugger = (S.firstChugger && S.players.some(p => p.id === S.firstChugger))
-    ? S.firstChugger
-    : S.players[Math.random() * S.players.length | 0].id;
-  const st = clone(S);
   const mode = gameMode();
-  st.round = blankRound((st.history.at(-1)?.n || 0) + 1, chugger, mode);
-  st.phase = mode === 'psychic' ? 'guessing' : 'predict';
+  const picked = (S.firstChugger && S.players.some(p => p.id === S.firstChugger)) ? S.firstChugger : null;
+  const st = clone(S);
+  const n = (st.history.at(-1)?.n || 0) + 1;
+  if (mode === 'eagle') {
+    // in Eagle Eye the first pick is the pourer (default: the host);
+    // the chugger only emerges at the reveal
+    st.round = blankRound(n, null, mode);
+    st.round.pourerId = picked || effectiveHostId() || st.players[Math.random() * st.players.length | 0].id;
+    st.phase = 'pouring';
+  } else {
+    st.round = blankRound(n, picked || st.players[Math.random() * st.players.length | 0].id, mode);
+    st.phase = mode === 'psychic' ? 'guessing' : 'predict';
+  }
   commit(st);
   vibrate(30);
 }
@@ -883,6 +912,125 @@ function buildPredict(app) {
   $('#b-lock').onclick = lock;
   $('#predIn').onkeydown = e => { if (e.key === 'Enter') lock(); };
   $('#predIn').focus();
+}
+
+/* ---------- pouring (Eagle Eye: the pourer photographs the glass) ----------
+   The photo is compressed on-device, sent to the estimate-volume edge
+   function, and discarded. Everyone moves to guessing the moment the photo
+   is taken — the AI verdict lands in the background via set_estimate
+   (first write wins, so the estimate can never be re-rolled). */
+function buildPouring(app) {
+  const r = S.round;
+  const pourer = nameOf(S, r.pourerId);
+  const isRoom = session.mode === 'room';
+  const isMe = isRoom && r.pourerId === me.id;
+  const canShoot = !isRoom || isMe || ui.takeover === r.n;
+  ui.estStatus = null; ui.estError = null;
+  if (!canShoot) {
+    app.innerHTML = `
+      <div class="roundtag">Round ${r.n} · ${MODE_INFO.eagle.icon} ${MODE_INFO.eagle.name}</div>
+      <h2 style="text-align:center">🍺 ${esc(pourer)} pours!</h2>
+      <div class="lockmsg thinking">🍺 ${esc(pourer)} is pouring…</div>
+      <button class="linkbtn" id="b-takeover">${esc(pourer)} doesn’t have a phone? Photo it from here</button>`;
+    $('#b-takeover').onclick = () => { ui.takeover = r.n; builtKey = null; render(); };
+    return;
+  }
+  app.innerHTML = `
+    <div class="roundtag">Round ${r.n} · ${MODE_INFO.eagle.icon} ${MODE_INFO.eagle.name}</div>
+    <h2 style="text-align:center">🍺 ${isMe ? 'You pour' : esc(pourer) + ' pours'}!</h2>
+    <p class="hint">Fill a glass, then photo it — the AI counts the ml.</p>
+    <label class="btn primary big cambtn">📸 Photo the glass
+      <input type="file" id="camIn" accept="image/*" capture="environment" hidden>
+    </label>
+    <p class="hint hidden" id="camBusy">📷 Reading the photo…</p>`;
+  $('#camIn').onchange = onPhotoPicked;
+}
+
+function compressImage(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      try {
+        const scale = Math.min(1, 1024 / Math.max(img.width, img.height));
+        const cv = document.createElement('canvas');
+        cv.width = Math.max(1, Math.round(img.width * scale));
+        cv.height = Math.max(1, Math.round(img.height * scale));
+        cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+        resolve(cv.toDataURL('image/jpeg', 0.7).split(',')[1]); // bare base64
+      } catch (e) { reject(e); }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('unreadable image')); };
+    img.src = url;
+  });
+}
+
+async function onPhotoPicked(e) {
+  const file = e.target.files?.[0];
+  e.target.value = '';
+  if (!file || !S || !isEagle(S.round)) return;
+  if (S.phase !== 'pouring' && S.phase !== 'guessing') return;
+  if (S.round.estimate) return; // verdict already locked
+  if (!supaConfigured()) { toast('👁️ Eagle Eye needs the backend — see the README'); return; }
+  $('#camBusy')?.classList.remove('hidden');
+  let b64;
+  try { b64 = await compressImage(file); }
+  catch (err) { console.error(err); toast('⚠️ Could not read that photo'); $('#camBusy')?.classList.add('hidden'); return; }
+  const roundN = S.round.n;
+  // everyone starts guessing right away; the AI runs in the background
+  if (S.phase === 'pouring') {
+    const st = clone(S);
+    st.phase = 'guessing';
+    S = st; cacheState(); render();
+    if (!backend.isLocal) {
+      backend.setPhase(S.code, 'pouring', 'guessing').catch(err => { console.error(err); toast('⚠️ Sync hiccup'); });
+    }
+  }
+  ui.estStatus = 'running'; ui.estError = null;
+  patchScreen();
+  requestEstimate(b64, roundN);
+}
+
+async function callEstimate(b64) {
+  const client = await getSupaClient();
+  const { data, error } = await client.functions.invoke('estimate-volume', {
+    body: { image: b64, room_code: S?.code || 'SOLO' },
+  });
+  if (error) {
+    let msg = 'The AI had a hiccup — try again.';
+    let code = null;
+    try {
+      const detail = await error.context?.json?.();
+      if (detail) { code = detail.error || null; msg = detail.message || msg; }
+    } catch (e) {}
+    const err = new Error(msg);
+    err.friendly = msg;
+    err.code = code;
+    throw err;
+  }
+  return data;
+}
+
+async function requestEstimate(b64, roundN) {
+  try {
+    const est = await callEstimate(b64);
+    if (!S || !isEagle(S.round) || S.round.n !== roundN) return; // round moved on
+    ui.estStatus = 'done';
+    if (backend.isLocal) {
+      if (!S.round.estimate) { S.round.estimate = est; cacheState(); }
+    } else {
+      await backend.setEstimate(S.code, roundN, est); // server-side: first write wins
+    }
+    patchScreen();
+  } catch (err) {
+    console.error('estimate failed', err);
+    if (!S || !isEagle(S.round) || S.round.n !== roundN || S.round.estimate) return;
+    ui.estStatus = 'error';
+    ui.estError = err.friendly || 'The AI had a hiccup — try again.';
+    patchScreen();
+    toast('👁️ ' + ui.estError);
+  }
 }
 
 /* ---------- betting (Over/Under: big OVER / UNDER buttons only) ----------
@@ -962,16 +1110,31 @@ function patchBetting() {
 /* ---------- guessing (Crystal Ball: everyone predicts the time) ---------- */
 function buildGuessing(app) {
   const r = S.round;
-  const chugger = nameOf(S, r.chuggerId);
-  const others = S.players.filter(p => p.id !== r.chuggerId);
+  const eagle = isEagle(r);
   const isRoom = session.mode === 'room';
+  // Eagle Eye: everyone guesses, pourer included. Crystal Ball: all but the chugger.
+  const guessers = eagle ? S.players : S.players.filter(p => p.id !== r.chuggerId);
+  const rows = bettableRows(guessers);
+  const chugger = nameOf(S, r.chuggerId);
+  const pourer = nameOf(S, r.pourerId);
   const iChug = isRoom && r.chuggerId === me.id;
-  const rows = bettableRows(others);
+  const canShoot = !isRoom || r.pourerId === me.id || ui.takeover === r.n;
+  const info = eagle ? MODE_INFO.eagle : MODE_INFO.psychic;
   app.innerHTML = `
-    <div class="roundtag">Round ${r.n} · ${MODE_INFO.psychic.icon} ${MODE_INFO.psychic.name}</div>
-    <div class="callout"><b>${iChug ? 'You are' : esc(chugger) + ' is'}</b> about to chug 🍺<br>
-      <span style="font-size:14px;color:var(--muted)">Call the exact time</span>
+    <div class="roundtag">Round ${r.n} · ${info.icon} ${info.name}</div>
+    <div class="callout">${eagle
+      ? `<b>${esc(pourer)}</b> poured one 🍺<br>
+         <span style="font-size:14px;color:var(--muted)">How many ml is in the glass?</span>`
+      : `<b>${iChug ? 'You are' : esc(chugger) + ' is'}</b> about to chug 🍺<br>
+         <span style="font-size:14px;color:var(--muted)">Call the exact time</span>`}
     </div>
+    ${eagle ? `
+      <div class="statusrow">
+        <span class="pill" id="aiStatus">🔍 AI is looking…</span>
+        <label class="btn small yellow hidden" id="b-retake">📸 Retake
+          <input type="file" id="camIn2" accept="image/*" capture="environment" hidden>
+        </label>
+      </div>` : ''}
     <div id="betrows" style="display:flex;flex-direction:column;gap:10px">
       ${rows.map(p => `
         <div class="betrow ${isRoom && p.id === me.id ? 'mine' : ''}" data-pid="${p.id}">
@@ -980,32 +1143,35 @@ function buildGuessing(app) {
             <span class="in hidden">✓ in</span>
           </div>
           <div class="betctl solo">
-            <input class="guess" type="text" inputmode="decimal" autocomplete="off" placeholder="seconds">
+            <input class="guess" type="text" inputmode="${eagle ? 'numeric' : 'decimal'}" autocomplete="off" placeholder="${eagle ? 'ml' : 'seconds'}">
           </div>
         </div>`).join('')}
     </div>
     ${isRoom ? '<div class="statusrow" id="betstatus"></div>' : ''}
-    <button class="btn go" id="b-ready" disabled>To the stopwatch ▶</button>
-    ${isRoom && ui.helpBets !== r.n ? '<button class="linkbtn" id="b-helpbets">Someone without a phone? Predict for them</button>' : ''}`;
+    <button class="btn go" id="b-ready" disabled>${eagle ? 'Reveal 👁️' : 'To the stopwatch ▶'}</button>
+    <div class="lockmsg thinking hidden" id="hostwait"></div>
+    ${isRoom && ui.helpBets !== r.n ? '<button class="linkbtn" id="b-helpbets">Someone without a phone? Guess for them</button>' : ''}`;
 
   $('#betrows').addEventListener('input', e => {
     const g = e.target.closest('.guess');
     if (!g) return;
     const pid = g.closest('.betrow').dataset.pid;
     const v = parseSec(g.value);
-    setLocalBet(pid, { guess: isFinite(v) && v >= 0 ? clamp2(v) : null });
+    setLocalBet(pid, { guess: isFinite(v) && v >= 0 ? (eagle ? Math.round(v) : clamp2(v)) : null });
   });
   if ($('#b-helpbets')) $('#b-helpbets').onclick = () => { ui.helpBets = r.n; builtKey = null; render(); };
-  $('#b-ready').onclick = goReady;
+  if (eagle && canShoot) $('#camIn2').onchange = onPhotoPicked;
+  $('#b-ready').onclick = eagle ? revealEagle : goReady;
   patchGuessing();
 }
 
 function patchGuessing() {
   if (!$('#betrows') || S.phase !== 'guessing') return;
   const r = S.round;
-  const others = S.players.filter(p => p.id !== r.chuggerId);
+  const eagle = isEagle(r);
+  const guessers = eagle ? S.players : S.players.filter(p => p.id !== r.chuggerId);
   let done = 0;
-  for (const p of others) {
+  for (const p of guessers) {
     const bet = r.bets[p.id] || {};
     const complete = betDone(bet, 'psychic');
     if (complete) done++;
@@ -1020,12 +1186,39 @@ function patchGuessing() {
     $('.in', row).classList.toggle('hidden', !complete);
   }
   const status = $('#betstatus');
-  if (status) status.innerHTML = others.map(p =>
+  if (status) status.innerHTML = guessers.map(p =>
     `<span class="pill ${betDone(r.bets[p.id], 'psychic') ? 'in' : ''}">${esc(p.name)} ${betDone(r.bets[p.id], 'psychic') ? '✓' : '…'}</span>`).join('');
-  const total = others.length;
-  const btn = $('#b-ready');
-  btn.disabled = done === 0;
-  btn.textContent = done < total ? `To the stopwatch (${done}/${total}) ▶` : 'To the stopwatch ▶';
+  const total = guessers.length;
+  const btn = $('#b-ready'), wait = $('#hostwait');
+  if (!eagle) {
+    btn.disabled = done === 0;
+    btn.textContent = done < total ? `To the stopwatch (${done}/${total}) ▶` : 'To the stopwatch ▶';
+    return;
+  }
+  // Eagle Eye extras: AI verdict status + retake + host-gated reveal
+  const ai = $('#aiStatus');
+  if (ai) {
+    ai.textContent = r.estimate ? '🤖 AI verdict locked in'
+      : ui.estStatus === 'error' ? '⚠️ ' + (ui.estError || 'AI failed — retake')
+      : '🔍 AI is looking…';
+    ai.classList.toggle('in', !!r.estimate);
+  }
+  const isRoom = session.mode === 'room';
+  const canShoot = !isRoom || r.pourerId === me.id || ui.takeover === r.n;
+  $('#b-retake')?.classList.toggle('hidden', !(canShoot && !r.estimate && ui.estStatus === 'error'));
+  if (isHost()) {
+    btn.classList.remove('hidden');
+    wait?.classList.add('hidden');
+    btn.disabled = done === 0 || !r.estimate;
+    btn.textContent = !r.estimate ? 'Waiting for the AI… 🔍'
+      : done < total ? `Reveal 👁️ (${done}/${total})` : 'Reveal 👁️';
+  } else {
+    btn.classList.add('hidden');
+    if (wait) {
+      wait.classList.remove('hidden');
+      wait.textContent = `⏳ ${hostName()} (host) reveals when everyone’s in…`;
+    }
+  }
 }
 
 async function goReady() {
@@ -1045,6 +1238,88 @@ async function goReady() {
   }
 }
 
+/* ---------- reveal (Eagle Eye): AI verdict + ranked guesses ----------
+   Host-only commit (like next-round) so exactly one phone computes the
+   scoring and — on a tie — the wheel outcome that everyone then replays. */
+async function revealEagle() {
+  if (!S || S.phase !== 'guessing' || !isEagle(S.round) || !isHost()) return;
+  if (!S.round.estimate) return;
+  await flushBets();
+  if (S.phase !== 'guessing') return;
+  const st = clone(S);
+  const r = st.round;
+  const target = r.estimate.estimated_ml;
+  const award = pid => { const p = st.players.find(p => p.id === pid); if (p) p.score++; };
+
+  const results = {};
+  for (const [pid, bet] of Object.entries(r.bets)) {
+    if (!betDone(bet, 'psychic')) continue;
+    results[pid] = { guess: bet.guess, diff: Math.round(Math.abs(bet.guess - target)) };
+  }
+  const diffs = Object.values(results).map(x => x.diff);
+  let pool = [];
+  if (diffs.length) {
+    const minD = Math.min(...diffs), maxD = Math.max(...diffs);
+    for (const [pid, res] of Object.entries(results)) {
+      res.closest = res.diff <= minD;
+      res.furthest = res.diff >= maxD;
+      if (res.closest) award(pid);
+    }
+    pool = Object.keys(results).filter(pid => results[pid].furthest);
+    r.maxDiff = maxD;
+  }
+  if (!pool.length) pool = st.players.map(p => p.id);
+  r.results = results;
+  r.chuggerId = pool.length === 1 ? pool[0] : pool[Math.random() * pool.length | 0];
+  r.nextReason = pool.length > 1 ? 'eagle-tie-wheel' : 'eagle-furthest';
+  r.wheelPool = pool.length > 1 ? pool : null;
+  st.phase = 'reveal';
+  commit(st);
+  vibrate(30);
+}
+
+function buildReveal(app) {
+  const r = S.round;
+  const est = r.estimate || {};
+  const chugName = nameOf(S, r.chuggerId);
+  const sorted = Object.entries(r.results || {}).sort((a, b) => a[1].diff - b[1].diff);
+  const rows = sorted.map(([pid, res]) => `
+    <div class="resrow ${res.closest ? 'win flashwin' : res.furthest ? 'lose' : ''}">
+      <span>${esc(nameOf(S, pid))}</span>
+      <span class="g">${res.guess}ml · off by ${res.diff}</span>
+      <span class="mark ${res.closest ? 'ok' : res.furthest ? 'no' : ''}">${res.closest ? '🎯 +1' : res.furthest ? '🍺' : ''}</span>
+    </div>`).join('');
+  app.innerHTML = `
+    <div class="roundtag">Round ${r.n} · ${MODE_INFO.eagle.icon} the AI says</div>
+    <div class="mlhero">${est.estimated_ml ?? '?'}<span class="unit">ml</span></div>
+    <div class="vs">in a <b>${esc(est.glass_type || 'glass')}</b>${est.fill_percent ? ` · ${est.fill_percent}% full` : ''}</div>
+    <div style="display:flex;flex-direction:column;gap:8px">${rows || '<p class="hint">No guesses this round.</p>'}</div>
+    ${r.wheelPool ? '<div id="wheelbox"></div>' : ''}
+    <div class="nextup ${r.wheelPool ? 'hidden' : ''}" id="nextupbanner">🍺 <b>${esc(chugName)}</b> drinks it!
+      <span class="why">${r.wheelPool ? 'the wheel has spoken' : 'furthest off'}</span></div>
+    <button class="btn primary big" id="b-tochug">To the chug ▶</button>`;
+  $('#b-tochug').onclick = goChug;
+  if (r.wheelPool) {
+    const names = r.wheelPool.map(pid => nameOf(S, pid));
+    renderWheel($('#wheelbox'), names, r.wheelPool.indexOf(r.chuggerId), () => {
+      $('#nextupbanner')?.classList.remove('hidden');
+    });
+  }
+}
+
+function goChug() {
+  if (!S || S.phase !== 'reveal') return;
+  const st = clone(S);
+  st.phase = 'ready';
+  S = st;
+  cacheState();
+  render();
+  vibrate(20);
+  if (!backend.isLocal) {
+    backend.setPhase(S.code, 'reveal', 'ready').catch(e => { console.error(e); toast('⚠️ Sync hiccup'); });
+  }
+}
+
 /* ---------- ready: armed stopwatch, manual start ---------- */
 function buildReady(app) {
   const r = S.round;
@@ -1055,7 +1330,8 @@ function buildReady(app) {
   // takeover link for chuggers who don't have their own device)
   const canStart = !isRoom || r.chuggerId === me.id || ui.takeover === r.n;
   // the reveal: everyone's (until now secret) calls, side by side
-  const reveal = S.players
+  // (skipped for Eagle Eye — its reveal screen already showed the guesses)
+  const reveal = mode === 'eagle' ? '' : S.players
     .filter(p => p.id !== r.chuggerId && betDone(r.bets[p.id], mode))
     .map(p => {
       const b = r.bets[p.id];
@@ -1066,7 +1342,9 @@ function buildReady(app) {
   app.innerHTML = `
     <div class="roundtag">Round ${r.n} · get ready</div>
     <div class="callout">
-      ${mode === 'psychic'
+      ${mode === 'eagle'
+        ? `<b>${esc(chugger)}</b>, down the <span class="bigpred">${r.estimate?.estimated_ml ?? '?'}ml</span>!`
+        : mode === 'psychic'
         ? `<b>${esc(chugger)}</b>, drink when the clock starts!`
         : `<b>${esc(chugger)}</b> says <span class="bigpred">${r.prediction}s</span>`}
     </div>
@@ -1119,7 +1397,9 @@ function buildRunning(app) {
   app.innerHTML = `
     <div class="roundtag">Round ${r.n} · ${esc(chugger)} is chugging</div>
     <div class="clockwrap"><div class="clock" id="clock">00:00.00</div></div>
-    <div class="predsmall">${mode === 'psychic'
+    <div class="predsmall">${mode === 'eagle'
+      ? `≈<b>${r.estimate?.estimated_ml ?? '?'}ml</b> on the line`
+      : mode === 'psychic'
       ? (guesses.length ? `Predictions: <b>${Math.min(...guesses)}s – ${Math.max(...guesses)}s</b>` : '')
       : `Prediction: <b>${r.prediction}s</b>`}</div>
     ${iOwn
@@ -1160,7 +1440,12 @@ function buildResult(app) {
   const entries = Object.entries(r.results || {});
 
   let vsLine = '', rows = '', sipLine = '';
-  if (mode === 'psychic') {
+  if (mode === 'eagle') {
+    const ml = r.estimate?.estimated_ml;
+    const speed = ml && r.actual ? Math.round(ml / r.actual) : null;
+    vsLine = `<div class="vs"><b>${esc(chugger)}</b> downed ≈<b>${ml ?? '?'}ml</b>${speed
+      ? ` — <span class="push">${speed} ml/s</span> true chug speed` : ''}</div>`;
+  } else if (mode === 'psychic') {
     const sorted = entries.sort((a, b) => a[1].diff - b[1].diff);
     rows = sorted.map(([pid, res]) => `
       <div class="resrow ${res.closest ? 'win flashwin' : ''}">
@@ -1191,6 +1476,7 @@ function buildResult(app) {
     'all-right-wheel':'everyone was right — the wheel decided',
     'furthest':       r.maxDiff != null ? `furthest off at ${secs(r.maxDiff)} away` : 'furthest off',
     'tie-wheel':      `tied for furthest off${r.maxDiff != null ? ` at ${secs(r.maxDiff)}` : ''} — the wheel decided`,
+    'eagle-pour':     'they pour the next glass',
     'random':         'picked at random — nobody bet',
   }[r.nextReason] || '';
 
@@ -1199,7 +1485,7 @@ function buildResult(app) {
     ${r.newRecord ? `<div class="recordbanner">🏆 NEW FASTEST CHUG EVER!</div>` : ''}
     <div class="actual">${fmtClock(r.actual * 1000)}</div>
     ${vsLine}
-    <div style="display:flex;flex-direction:column;gap:8px">${rows || '<p class="hint">No bets this round.</p>'}</div>
+    ${mode === 'eagle' ? rows : `<div style="display:flex;flex-direction:column;gap:8px">${rows || '<p class="hint">No bets this round.</p>'}</div>`}
     ${sipLine}
     ${r.wheelPool ? '<div id="wheelbox"></div>' : ''}
     <div class="nextup ${r.wheelPool ? 'hidden' : ''}" id="nextupbanner">🍺 <b>${esc(nextName)}</b> is up next
@@ -1224,8 +1510,15 @@ function nextRoundAction() {
   if (!S || S.phase !== 'result' || !isHost()) return;
   const st = clone(S);
   const mode = gameMode();
-  st.round = blankRound(st.round.n + 1, st.round.nextChuggerId, mode);
-  st.phase = mode === 'psychic' ? 'guessing' : 'predict';
+  const next = st.round.nextChuggerId;
+  if (mode === 'eagle') {
+    st.round = blankRound(st.round.n + 1, null, mode);
+    st.round.pourerId = next; // whoever just chugged (or is "up next") pours
+    st.phase = 'pouring';
+  } else {
+    st.round = blankRound(st.round.n + 1, next, mode);
+    st.phase = mode === 'psychic' ? 'guessing' : 'predict';
+  }
   commit(st);
 }
 
@@ -1253,13 +1546,15 @@ function openStats() {
           <div class="val">${stats.rounds}</div>
           <div class="who">&nbsp;</div></div>
       </div>
-      ${stats.bestCaller || stats.bestPsychic ? `
+      ${stats.bestCaller || stats.bestPsychic || stats.bestSpeed ? `
       <div class="card">
         <h3 style="margin-top:0">Hall of fame</h3>
         ${stats.bestCaller ? `<div class="famerow">🎲 <b>${esc(stats.bestCaller.name)}</b> calls it best
           <span class="t">${Math.round(stats.bestCaller.ouRate * 100)}% (${stats.bestCaller.ouW}/${stats.bestCaller.ouN})</span></div>` : ''}
         ${stats.bestPsychic ? `<div class="famerow">🔮 <b>${esc(stats.bestPsychic.name)}</b> sees the future
           <span class="t">±${secs(stats.bestPsychic.psyAvg)}</span></div>` : ''}
+        ${stats.bestSpeed ? `<div class="famerow">⚡ <b>${esc(stats.bestSpeed.name)}</b> true chug speed
+          <span class="t">${Math.round(stats.bestSpeed.speed)} ml/s (${stats.bestSpeed.ml}ml · ${secs(stats.bestSpeed.seconds)})</span></div>` : ''}
       </div>` : ''}
       <div class="card">
         <h3 style="margin-top:0">Per player</h3>
@@ -1275,9 +1570,10 @@ function openStats() {
       <div class="card">
         <h3 style="margin-top:0">Last rounds</h3>
         ${[...S.history].reverse().slice(0, 6).map(h => `
-          <div class="histrow"><span>#${h.n} ${MODE_INFO[h.mode || 'ou'].icon}</span>
+          <div class="histrow"><span>#${h.n} ${(MODE_INFO[h.mode || 'ou'] || MODE_INFO.ou).icon}</span>
             <b>${esc(h.chuggerName)}</b>
             ${h.prediction != null ? `<span>said ${secs(h.prediction)}</span>` : ''}
+            ${h.ml ? `<span>${h.ml}ml</span>` : ''}
             <span class="t">${secs(h.actual)}</span></div>`).join('')}
       </div>`}
     </div>`;

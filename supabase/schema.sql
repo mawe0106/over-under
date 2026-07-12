@@ -116,6 +116,28 @@ as $$
      and state->>'phase' = p_from;
 $$;
 
+-- Eagle Eye: the AI's volume estimate for the round. One estimate per
+-- round, first write wins — the lock that stops re-rolling the AI.
+-- Returns true iff this call was the one that landed.
+create or replace function public.set_estimate(p_code text, p_round int, p_estimate jsonb)
+returns boolean
+language plpgsql security definer
+as $$
+declare
+  v_rows int;
+begin
+  update public.rooms
+     set state = jsonb_set(state, '{round,estimate}', p_estimate),
+         updated_at = now()
+   where code = p_code
+     and (state->'round'->>'n')::int = p_round
+     and (state->'round'->'estimate' is null
+          or state->'round'->'estimate' = 'null'::jsonb)
+     and state->>'phase' in ('pouring', 'guessing');
+  get diagnostics v_rows = row_count;
+  return v_rows = 1;
+end $$;
+
 -- Stopwatch start: first phone to run this claims the clock, gets the server
 -- start timestamp back, and the round flips from 'ready' to 'running'.
 -- Everyone else gets null. This is the lock that stops two phones fighting
@@ -153,5 +175,6 @@ grant execute on function
   public.join_room(text, jsonb),
   public.set_bet(text, text, jsonb),
   public.set_phase(text, text, text),
+  public.set_estimate(text, int, jsonb),
   public.claim_timer(text, text, text)
 to anon, authenticated;

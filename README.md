@@ -15,6 +15,21 @@ spins over all of you — someone has to drink.)
 seconds. Closest prediction scores a point; furthest off chugs next (ties spin
 the wheel). The chugger doesn't predict anything — they just drink.
 
+**👁️ Eagle Eye** — the pourer fills a glass and photographs it; an AI
+(Claude Haiku vision, via a Supabase Edge Function) judges how many ml are in
+it. Everyone — pourer included — guesses the ml blind. Closest scores a point,
+furthest off chugs the glass (ties spin the wheel), and the chugger pours the
+next one. The result screen shows *true chug speed* in ml/s, and the all-time
+speed record lives in the stats. Photos go phone → edge function → discarded;
+nothing is ever stored.
+
+> Eagle Eye needs one extra one-time setup step: deploy
+> [`supabase/functions/estimate-volume`](supabase/functions/estimate-volume/index.ts)
+> and set your Anthropic API key as a secret —
+> `supabase secrets set ANTHROPIC_API_KEY=sk-ant-... --project-ref <ref>`
+> (or via dashboard → Edge Functions → Secrets). The key never appears in
+> client code or this repo.
+
 Pick the mode in the lobby; you can also switch it mid-session from the 📊 menu
 (applies from the next round).
 

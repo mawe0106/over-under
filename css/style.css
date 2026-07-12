@@ -351,6 +351,19 @@ h3 { margin: 4px 0; font-size: 16px; font-weight: 800; color: var(--muted); text
 .resrow .mark.ok { color: var(--green); }
 .resrow .mark.no { color: var(--red); }
 
+/* -- Eagle Eye ---------------------------------------------------------------- */
+.cambtn { display: flex; align-items: center; justify-content: center; gap: 10px; cursor: pointer; text-align: center; }
+.mlhero {
+  text-align: center;
+  font-size: clamp(64px, 20vw, 100px); font-weight: 900; line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--yellow);
+}
+.mlhero .unit { font-size: 26px; font-weight: 800; color: var(--muted); margin-left: 6px; }
+.resrow.lose { background: linear-gradient(90deg, rgba(255, 92, 92, .28), var(--card) 60%); }
+#aiStatus.in { color: var(--green); }
+.statusrow .btn.small { margin: 0; }
+
 .nextup {
   text-align: center; font-size: 19px; font-weight: 800;
   background: linear-gradient(135deg, #3c1d79, #2b1655);
