@@ -1,6 +1,6 @@
 // Supabase Edge Function: estimate-volume
 // The Eagle Eye 👁️ judge. Receives a compressed JPEG of a poured glass,
-// asks Claude Haiku vision for {glass_type, capacity_ml, fill_percent,
+// asks Claude Sonnet vision for {glass_type, capacity_ml, fill_percent,
 // estimated_ml} and returns it. The photo lives only for the duration of
 // this request — it is never stored anywhere.
 //
@@ -13,14 +13,18 @@ const CORS = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-const SYSTEM_PROMPT = `You estimate the volume of liquid in a drinking glass from a photo, for a party game. Common context: Dutch/European beer glasses (vaasje ~250ml, fluitje ~180-200ml, pint ~500ml, weizen ~500ml, stein ~1000ml, shot ~35ml), but any glass can appear.
+const SYSTEM_PROMPT = `You estimate the volume of liquid in a drinking glass from a photo, for a party game. Common context: Dutch/European glasses (vaasje ~250ml, fluitje ~180-200ml, pint ~500ml, weizen ~500ml, stein ~1000ml, shot ~35ml, ordinary water/longdrink glass ~200-350ml, wine glass ~150-450ml), but any glass can appear.
 
-Identify the most likely glass type and total capacity, estimate what fraction is filled with liquid, and compute the milliliters of liquid.
+Reason briefly, step by step:
+1. Identify the glass type and its total capacity in ml. Use scale clues (hands, table, bottles, coasters) — don't assume beer-glass capacity for an ordinary water glass.
+2. Locate the liquid's fill line. Beware perspective: photos taken from above make a glass look fuller than it is — prefer the far-side fill line. For clear liquids (water), look for the meniscus and refraction edges carefully.
+3. Convert fill HEIGHT to fill VOLUME. Most glasses taper narrower toward the bottom, so liquid up to half the height is typically only 35-45% of the volume. Only a true cylinder maps height 1:1 to volume.
+4. milliliters = capacity_ml × volume fraction. People systematically overestimate liquid in glasses — when torn between two values, choose the lower one.
 
-Respond with ONLY a JSON object, no markdown fences, no other text:
-{"glass_type": "<short name>", "capacity_ml": <int>, "fill_percent": <int 0-100>, "estimated_ml": <int>}
+After your brief reasoning, end your reply with exactly ONE JSON object on the final line, no markdown fences:
+{"glass_type": "<short name>", "capacity_ml": <int>, "fill_percent": <int 0-100, volume percent>, "estimated_ml": <int>}
 
-If no glass with liquid is clearly visible, respond with exactly:
+If no glass with liquid is clearly visible, end with exactly:
 {"error": "no_glass"}`;
 
 const json = (status: number, body: unknown) =>
@@ -74,14 +78,18 @@ Deno.serve(async (req: Request) => {
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 200,
+        // Sonnet over Haiku: volume-from-photo needs the spatial reasoning.
+        // Still ~1-2 cents per photo at party image sizes. Note: Sonnet 5
+        // rejects sampling params (temperature etc.) and thinks adaptively
+        // by default, so max_tokens includes thinking headroom.
+        model: 'claude-sonnet-5',
+        max_tokens: 2000,
         system: SYSTEM_PROMPT,
         messages: [{
           role: 'user',
           content: [
             { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: image } },
-            { type: 'text', text: 'Estimate the liquid volume in this glass.' },
+            { type: 'text', text: 'Estimate the liquid volume in this glass. Reason step by step, then end with the JSON object.' },
           ],
         }],
       }),
@@ -97,16 +105,22 @@ Deno.serve(async (req: Request) => {
   }
 
   const data = await upstream.json();
-  const text = String(data?.content?.[0]?.text ?? '')
-    .trim()
-    .replace(/^```(?:json)?\s*/, '')
-    .replace(/\s*```$/, '');
+  // adaptive thinking means content may start with a thinking block —
+  // take the text block, not content[0]
+  const textBlock = Array.isArray(data?.content)
+    ? data.content.find((b: { type?: string }) => b?.type === 'text')
+    : null;
+  const raw = String(textBlock?.text ?? '').trim();
+  // the model reasons first and ends with one JSON object — take the last {...}
+  const start = raw.lastIndexOf('{');
+  const end = raw.lastIndexOf('}');
+  const text = start >= 0 && end > start ? raw.slice(start, end + 1) : '';
 
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(text);
   } catch {
-    console.error('unparseable model output', text.slice(0, 200));
+    console.error('unparseable model output', raw.slice(-300));
     return json(502, { error: 'bad_model_output', message: 'The AI mumbled — try another photo.' });
   }
 
